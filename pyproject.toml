@@ -3,13 +3,13 @@ name = "acatome-mcp"
 version = "0.1.0"
 description = "MCP server exposing acatome-store tools"
 requires-python = ">=3.11"
-license = "MIT"
+license = "GPL-3.0-or-later"
 readme = "README.md"
 keywords = ["mcp", "scientific-papers", "llm", "semantic-search", "notes"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
