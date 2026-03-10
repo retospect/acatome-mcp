@@ -160,6 +160,85 @@ class TestParseSupplement:
             parse("slug:smith2024/supplement/")
 
 
+class TestParseChunkHash:
+    """Tests for #N chunk shorthand syntax."""
+
+    def test_hash_single(self):
+        u = parse("slug:smith2024#38")
+        assert u.ident == "smith2024"
+        assert u.view == "chunk"
+        assert u.range_start == 38
+        assert u.range_end == 38
+        assert u.is_single
+
+    def test_hash_closed_range(self):
+        u = parse("slug:smith2024#38-42")
+        assert u.view == "chunk"
+        assert u.range_start == 38
+        assert u.range_end == 42
+
+    def test_hash_open_range(self):
+        u = parse("slug:smith2024#38-")
+        assert u.view == "chunk"
+        assert u.range_start == 38
+        assert u.range_end is None
+        assert u.is_open_range
+
+    def test_hash_with_notes(self):
+        u = parse("slug:smith2024#38/notes")
+        assert u.view == "chunk"
+        assert u.range_start == 38
+        assert u.notes is True
+
+    def test_hash_with_summary(self):
+        u = parse("slug:smith2024#38/summary")
+        assert u.view == "chunk"
+        assert u.range_start == 38
+        assert u.summary is True
+
+    def test_hash_range_with_summary(self):
+        u = parse("slug:smith2024#38-42/summary")
+        assert u.view == "chunk"
+        assert u.range_start == 38
+        assert u.range_end == 42
+        assert u.summary is True
+
+    def test_hash_with_supplement(self):
+        u = parse("slug:smith2024/supplement/s1#4")
+        assert u.supplement == "s1"
+        assert u.view == "chunk"
+        assert u.range_start == 4
+
+    def test_hash_conflicts_with_other_view(self):
+        with pytest.raises(ValueError, match="Cannot combine"):
+            parse("slug:smith2024#38/toc")
+
+
+class TestParseSummary:
+    """Tests for /summary modifier."""
+
+    def test_paper_level_summary_is_view(self):
+        u = parse("slug:smith2024/summary")
+        assert u.view == "summary"
+        assert u.summary is False
+
+    def test_chunk_summary_is_modifier(self):
+        u = parse("slug:smith2024#38/summary")
+        assert u.view == "chunk"
+        assert u.summary is True
+        assert u.range_start == 38
+
+    def test_no_summary_by_default(self):
+        u = parse("slug:smith2024#38")
+        assert u.summary is False
+
+    def test_summary_and_notes(self):
+        u = parse("slug:smith2024#38/summary/notes")
+        assert u.view == "chunk"
+        assert u.summary is True
+        assert u.notes is True
+
+
 class TestParseErrors:
     def test_missing_scheme(self):
         with pytest.raises(ValueError, match="Missing scheme"):

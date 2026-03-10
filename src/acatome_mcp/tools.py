@@ -8,11 +8,16 @@ Three tools:
 
 from __future__ import annotations
 
+import json
+import re
 from typing import Any
 
 from acatome_store.store import Store
 
 from acatome_mcp.uri import PAGE_SIZE, ParsedURI, parse
+
+# Tool name prefix — MCP qualifies tools as "server.tool", hints must match.
+_T = "acatome."
 
 # ---------------------------------------------------------------------------
 # Shared store singleton
@@ -95,11 +100,61 @@ def _range_slice(
     return [i for i in items if start <= (i.get(index_key) or 0) <= end]
 
 
-def _make_hint(base_id: str, suffix: str, filter_str: str = "") -> str:
+# ---------------------------------------------------------------------------
+# JATS XML → markdown / Unicode
+# ---------------------------------------------------------------------------
+
+_JATS_SUB_MAP = str.maketrans("0123456789+-=()", "₀₁₂₃₄₅₆₇₈₉₊₋₌₍₎")
+_JATS_SUP_MAP = str.maketrans("0123456789+-=()", "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾")
+
+
+def _jats_sub(m: re.Match) -> str:
+    return m.group(1).translate(_JATS_SUB_MAP)
+
+
+def _jats_sup(m: re.Match) -> str:
+    return m.group(1).translate(_JATS_SUP_MAP)
+
+
+def _clean_jats(text: str) -> str:
+    """Convert JATS XML tags to markdown / Unicode.
+
+    Handles <jats:sub>, <jats:sup>, <jats:italic>, <jats:bold>,
+    <jats:title>, <jats:p>, and strips remaining XML tags.
+    """
+    if "<jats:" not in text and "<mml:" not in text:
+        return text
+
+    # Subscript → Unicode digits
+    text = re.sub(r"<jats:sub>([^<]+)</jats:sub>", _jats_sub, text)
+    # Superscript → Unicode digits
+    text = re.sub(r"<jats:sup>([^<]+)</jats:sup>", _jats_sup, text)
+    # Italic → markdown
+    text = re.sub(r"<jats:italic>([^<]+)</jats:italic>", r"*\1*", text)
+    # Bold → markdown
+    text = re.sub(r"<jats:bold>([^<]+)</jats:bold>", r"**\1**", text)
+    # Title → bold
+    text = re.sub(r"<jats:title>([^<]*)</jats:title>", r"**\1** ", text)
+    # Paragraph → double newline
+    text = re.sub(r"<jats:p>", "\n", text)
+    text = re.sub(r"</jats:p>", "\n", text)
+    # Strip all remaining XML tags
+    text = re.sub(r"<[^>]+>", "", text)
+    # Collapse whitespace (preserve double newlines for paragraphs)
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def _make_hint(
+    base_id: str, suffix: str, filter_str: str = "", page: int | None = None
+) -> str:
     """Build a hint string for the next action."""
-    call = f"paper('{base_id}{suffix}'"
+    call = f"{_T}paper('{base_id}{suffix}'"
     if filter_str:
         call += f", filter='{filter_str}'"
+    if page is not None:
+        call += f", page={page}"
     call += ")"
     return call
 
@@ -107,6 +162,66 @@ def _make_hint(base_id: str, suffix: str, filter_str: str = "") -> str:
 def _base_id(uri: ParsedURI) -> str:
     """Reconstruct scheme:ident portion."""
     return f"{uri.scheme}:{uri.ident}"
+
+
+def _clean_section_path(raw: str | None) -> str:
+    """Convert JSON section_path to clean text: '§1.5. Metal–Organic Frameworks'."""
+    if not raw:
+        return ""
+    try:
+        sections = json.loads(raw) if isinstance(raw, str) else raw
+    except (json.JSONDecodeError, TypeError):
+        return ""
+    if sections:
+        return "§" + str(sections[-1])
+    return ""
+
+
+def _format_block_line(
+    item: dict, slug: str, show_summary: bool = False
+) -> str:
+    """Format a single block as compact text line(s).
+
+    Returns:
+        slug:x#N (pP) | type | §section
+        text or summary content
+    """
+    bi = item.get("block_index")
+    pg = item.get("page")
+    bt = item.get("block_type", "text")
+    section = _clean_section_path(item.get("section_path"))
+
+    # Header: slug:x#N (pP) | type | §section
+    chunk_ref = f"slug:{slug}#{bi}" if bi is not None else f"slug:{slug}"
+    page_ref = f" (p{pg})" if pg else ""
+    parts = [f"{chunk_ref}{page_ref}", bt]
+    if section:
+        parts.append(section)
+    header = " | ".join(parts)
+
+    # Content: summary or text
+    if show_summary:
+        content = item.get("summary") or "(no summary available)"
+    else:
+        content = item.get("text", "")
+
+    return f"{header}\n{content}"
+
+
+def _format_hints(hints: list[str]) -> str:
+    """Format hints as a Next: block."""
+    if not hints:
+        return ""
+    return "\n\nNext:\n" + "\n".join(hints)
+
+
+def _format_meta_text(meta: dict) -> str:
+    """Format metadata dict as compact key: value lines."""
+    lines = []
+    for k, v in meta.items():
+        if v is not None:
+            lines.append(f"{k}: {v}")
+    return "\n".join(lines)
 
 
 def _annotate_note_counts(items: list[dict], store: Store, ref_id: int) -> list[dict]:
@@ -129,19 +244,19 @@ def _annotate_note_counts(items: list[dict], store: Store, ref_id: int) -> list[
 # ---------------------------------------------------------------------------
 
 
-def paper(id: str, filter: str = "", page: int = 1) -> dict[str, Any]:
+def paper(id: str, filter: str = "", page: int = 1) -> str:
     """Read paper content via URI addressing.
 
     Args:
-        id: URI — scheme:identifier[/view[/range]]
+        id: URI — scheme:identifier[#chunk][/view][/summary][/notes]
             Schemes: slug, doi, arxiv, s2, ref
-            Views: meta, abstract, summary, toc, chunk, page, fig
-            Range: N, N-M, N- (open)
+            Views: meta, abstract, summary, toc, page, fig
+            #N for chunk, #N-M for range, #N- for open range
         filter: Case-insensitive substring match on block text.
         page: Result page (1-indexed) for filtered results.
 
     Returns:
-        Dict with view-specific data + hints for next actions.
+        Compact text with content + Next: hints.
     """
     uri = parse(id)
     store = _get_store()
@@ -150,10 +265,8 @@ def paper(id: str, filter: str = "", page: int = 1) -> dict[str, Any]:
 
     paper_dict = store.get(ident)
     if paper_dict is None:
-        return {
-            "error": f"Paper not found: {id}",
-            "hints": ["search('your query') — try searching"],
-        }
+        hints = [f"{_T}search('your query') — try searching"]
+        return f"Paper not found: {id}" + _format_hints(hints)
 
     ref_id = paper_dict.get("ref_id") or paper_dict.get("id")
     slug = paper_dict.get("slug", "")
@@ -173,114 +286,214 @@ def paper(id: str, filter: str = "", page: int = 1) -> dict[str, Any]:
             if target:
                 block_node_id = target[0]["node_id"]
             else:
-                return {"error": f"Chunk {uri.range_start} not found"}
+                return f"Chunk {uri.range_start} not found"
         if block_node_id:
             notes = store.get_notes(block_node_id=block_node_id)
         else:
             notes = store.get_notes(ref_id=ref_id)
+
+        if notes:
+            note_lines = []
+            for n in notes:
+                nid = n.get("id")
+                content = n.get("content", "")
+                note_lines.append(f"[{nid}] {content}")
+            body = f"{len(notes)} note(s) for {hint_id}\n" + "\n".join(note_lines)
+        else:
+            body = f"No notes for {hint_id}"
+
         hints = [
-            f"note('{hint_id}', content='...') — add a note",
-            f"paper('{hint_id}') — view paper",
+            f"{_T}note('{hint_id}', content='...') — add a note",
+            f"{_T}paper('{hint_id}') — view paper",
         ]
         for n in notes:
             nid = n.get("id")
-            hints.append(f"note('note:{nid}', content='...') — edit note {nid}")
-            hints.append(f"note('note:{nid}', delete=True) — delete note {nid}")
-        return {"notes": notes, "hints": hints}
+            hints.append(f"{_T}note('note:{nid}', content='...') — edit note {nid}")
+            hints.append(f"{_T}note('note:{nid}', delete=True) — delete note {nid}")
+        return body + _format_hints(hints)
 
     # --- meta ---
     if view == "meta":
-        return {
-            "meta": _clean_meta(paper_dict),
-            "hints": [
-                f"paper('{hint_id}/abstract') — read abstract",
-                f"paper('{hint_id}/toc') — browse structure",
-                f"paper('{hint_id}/notes') — read notes",
-            ],
-        }
+        meta = _clean_meta(paper_dict)
+        body = f"slug:{slug} — metadata\n" + _format_meta_text(meta)
+        hints = [
+            f"{_T}paper('{hint_id}/abstract') — read abstract",
+            f"{_T}paper('{hint_id}/toc') — browse structure",
+            f"{_T}paper('{hint_id}/notes') — read notes",
+        ]
+        return body + _format_hints(hints)
 
     # --- abstract ---
     if view == "abstract":
         blocks = store.get_blocks(ident, block_type="abstract", supplement=supp)
-        text = blocks[0]["text"] if blocks else None
-        return {
-            "abstract": text,
-            "hints": [
-                f"paper('{hint_id}/toc') — browse structure",
-                f"paper('{hint_id}/chunk') — read chunks",
-                f"search('{(text or '')[:40]}') — find related",
-            ],
-        }
+        text = _clean_jats(blocks[0]["text"]) if blocks else "(no abstract)"
+        body = f"slug:{slug} — abstract\n{text}"
+        hints = [
+            f"{_T}paper('{hint_id}/toc') — browse structure",
+            f"{_T}paper('{hint_id}#0') — read first block",
+            f"{_T}search('{_truncate(text, 40)}') — find related",
+        ]
+        return body + _format_hints(hints)
 
     # --- summary ---
     if view == "summary":
         blocks = store.get_blocks(ident, block_type="paper_summary", supplement=supp)
-        text = blocks[0]["text"] if blocks else None
-        provenance = "generated" if text else None
-        return {
-            "summary": text,
-            "provenance": provenance,
-            "hints": [
-                f"paper('{hint_id}/abstract') — original abstract",
-                f"paper('{hint_id}/toc') — browse structure",
-            ],
-        }
+        text = blocks[0]["text"] if blocks else "(no summary available)"
+        prov = " (generated)" if blocks else ""
+        body = f"slug:{slug} — summary{prov}\n{text}"
+        hints = [
+            f"{_T}paper('{hint_id}/abstract') — original abstract",
+            f"{_T}paper('{hint_id}/toc') — browse structure",
+        ]
+        return body + _format_hints(hints)
 
     # --- toc ---
     if view == "toc":
         toc = store.get_toc(ident, supplement=supp)
         toc = _filter_items(toc, filter, fields=("preview", "section_path"))
-        items, total, has_more = _paginate(toc, page)
-        _annotate_note_counts(items, store, ref_id)
+
+        # Hide junk blocks unless filter explicitly asks for them
+        show_junk = filter and "junk" in filter.lower()
+        if not show_junk:
+            junk_count = sum(1 for t in toc if t.get("block_type") == "junk")
+            toc = [t for t in toc if t.get("block_type") != "junk"]
+        else:
+            junk_count = 0
+
+        toc_page_size = 100
+        total = len(toc)
+        start = (page - 1) * toc_page_size
+        end = start + toc_page_size
+        page_items = toc[start:end]
+        has_more = end < total
+
+        lines = []
+        for item in page_items:
+            bi = item.get("block_index")
+            pg = item.get("page", 0)
+            bt = item.get("block_type", "text")
+            preview = (item.get("preview") or "").strip()
+            section = _clean_section_path(item.get("section_path"))
+            note_count = item.get("note_count", 0)
+
+            # Skip empty previews (e.g. blank figures)
+            if not preview and bt in ("figure", "table"):
+                continue
+
+            # Format: #N (pP) | type | §section | preview
+            idx = f"#{bi}" if bi is not None else "  "
+            pg_str = f"(p{pg})" if pg else ""
+            type_tag = {
+                "section_header": "H",
+                "figure": "fig",
+                "table": "tab",
+                "junk": "junk",
+            }.get(bt, bt)
+            parts = [f"{idx} {pg_str}", type_tag]
+            if section:
+                parts.append(section)
+            parts.append(preview)
+            line = " | ".join(parts)
+
+            if note_count:
+                line += f"  [{note_count} note(s)]"
+            lines.append(line)
+
+        header = f"TOC for slug:{slug} — {total} blocks"
+        if junk_count:
+            header += f" ({junk_count} junk hidden)"
+        if page > 1 or has_more:
+            header += f" (page {page})"
+        header += "\n#index (page) | type | §section | summary"
+        body = header + "\n" + "\n".join(lines)
+
         hints = []
         if has_more:
             hints.append(
-                _make_hint(hint_id, "/toc", filter) + f" page={page + 1} — more entries"
+                _make_hint(hint_id, "/toc", filter, page=page + 1)
+                + " — more entries"
             )
-        hints.append(f"paper('{hint_id}/chunk/N') — read specific chunk")
-        return {"items": items, "total": total, "page": page, "hints": hints}
+        hints.append(f"{_T}paper('{hint_id}#N') — read block N in full")
+        hints.append(f"{_T}paper('{hint_id}#N/summary') — read block N summary")
+        if junk_count:
+            hints.append(
+                f"{_T}paper('{hint_id}/toc', filter='junk') — show {junk_count} hidden junk blocks"
+            )
+        return body + _format_hints(hints)
 
     # --- chunk ---
     if view == "chunk":
         all_blocks = store.get_blocks(ident, block_type="text", supplement=supp)
+        show_summary = uri.summary
+
         if uri.has_range:
             items = _range_slice(all_blocks, uri, index_key="block_index")
             _annotate_note_counts(items, store, ref_id)
+
+            # Compact text output
+            mode_label = "summary" if show_summary else "text"
+            header = (
+                f"slug:{slug}#{uri.range_start}"
+                + (f"-{uri.range_end}" if uri.range_end and uri.range_end != uri.range_start else "")
+                + (f"{'/' + mode_label if show_summary else ''}")
+                + f" — {len(items)} block{'s' if len(items) != 1 else ''}"
+            )
+            header += f"\nslug#index (page) | type | §section — "
+            header += "enrichment summary" if show_summary else "full text"
+
+            blocks_text = []
+            for item in items:
+                blocks_text.append(_format_block_line(item, slug, show_summary))
+
             hints = []
             if uri.is_open_range and len(items) == PAGE_SIZE:
                 next_start = uri.range_start + PAGE_SIZE
-                hints.append(_make_hint(hint_id, f"/chunk/{next_start}-", filter))
-            if not uri.is_single and items:
-                hints.append(f"note('{hint_id}/chunk/N', content='...') — annotate")
-            # Add note hints for items with notes
+                hints.append(f"{_T}paper('{hint_id}#{next_start}-') — next {PAGE_SIZE}")
+            if not uri.is_single:
+                if show_summary:
+                    hints.append(f"{_T}paper('{hint_id}#{uri.range_start}') — read full text")
+                else:
+                    hints.append(f"{_T}paper('{hint_id}#{uri.range_start}/summary') — see summaries")
             for item in items:
                 if item.get("note_count"):
                     bi = item.get("block_index")
                     hints.append(
-                        f"paper('{hint_id}/chunk/{bi}/notes') — {item['note_count']} note(s)"
+                        f"{_T}paper('{hint_id}#{bi}/notes') — {item['note_count']} note(s)"
                     )
-            return {"items": items, "total": len(all_blocks), "hints": hints}
+
+            body = header + "\n\n" + "\n\n".join(blocks_text)
+            return body + _format_hints(hints)
         else:
             # No range: filter + paginate
             filtered = _filter_items(all_blocks, filter)
             items, total, has_more = _paginate(filtered, page)
             _annotate_note_counts(items, store, ref_id)
+
+            blocks_text = []
+            for item in items:
+                blocks_text.append(_format_block_line(item, slug, show_summary))
+
+            header = f"slug:{slug} — {total} blocks"
+            if page > 1 or has_more:
+                header += f" (page {page})"
+            header += f"\nslug#index (page) | type | §section"
+
             hints = []
             if has_more:
-                h = f"paper('{hint_id}/chunk'"
-                if filter:
-                    h += f", filter='{filter}'"
-                h += f", page={page + 1}) — next {PAGE_SIZE}"
-                hints.append(h)
-            hints.append(f"note('{hint_id}/chunk/N', content='...') — annotate")
-            # Add note hints for items with notes
+                hints.append(
+                    _make_hint(hint_id, "/chunk", filter, page=page + 1)
+                    + f" — next {PAGE_SIZE}"
+                )
+            hints.append(f"{_T}paper('{hint_id}#N') — read specific block")
             for item in items:
                 if item.get("note_count"):
                     bi = item.get("block_index")
                     hints.append(
-                        f"paper('{hint_id}/chunk/{bi}/notes') — {item['note_count']} note(s)"
+                        f"{_T}paper('{hint_id}#{bi}/notes') — {item['note_count']} note(s)"
                     )
-            return {"items": items, "total": total, "page": page, "hints": hints}
+
+            body = header + "\n\n" + "\n\n".join(blocks_text)
+            return body + _format_hints(hints)
 
     # --- page ---
     if view == "page":
@@ -288,41 +501,57 @@ def paper(id: str, filter: str = "", page: int = 1) -> dict[str, Any]:
         if uri.has_range:
             items = _range_slice(all_blocks, uri, index_key="page")
             items = _filter_items(items, filter)
+
+            blocks_text = []
+            for item in items:
+                blocks_text.append(_format_block_line(item, slug))
+
+            header = f"slug:{slug}/page/{uri.range_start} — {len(items)} blocks"
             hints = []
             if uri.is_open_range and len(items) == PAGE_SIZE:
                 next_start = uri.range_start + PAGE_SIZE
                 hints.append(_make_hint(hint_id, f"/page/{next_start}-", filter))
-            return {"items": items, "total": len(all_blocks), "hints": hints}
+            body = header + "\n\n" + "\n\n".join(blocks_text)
+            return body + _format_hints(hints)
         else:
-            return {"error": "page view requires a range, e.g. /page/3 or /page/2-4"}
+            return "page view requires a range, e.g. /page/3 or /page/2-4"
 
-    # --- fig (future) ---
+    # --- fig ---
     if view == "fig":
         all_blocks = store.get_blocks(ident, block_type="figure", supplement=supp)
         if uri.has_range:
             items = _range_slice(all_blocks, uri, index_key="block_index")
         else:
             items = all_blocks[:PAGE_SIZE]
-        return {"items": items, "total": len(all_blocks), "hints": []}
+
+        blocks_text = []
+        for item in items:
+            blocks_text.append(_format_block_line(item, slug))
+
+        header = f"slug:{slug}/fig — {len(items)} of {len(all_blocks)} figures"
+        body = header + "\n\n" + "\n\n".join(blocks_text) if blocks_text else header
+        hints = [
+            f"{_T}paper('{hint_id}/toc') — browse structure",
+            f"{_T}paper('{hint_id}#N') — read block N",
+        ]
+        return body + _format_hints(hints)
 
     # --- default view (no view specified) ---
     if supp:
         # Supplement overview
         all_blocks = store.get_blocks(ident, supplement=supp)
         page_count = max((b.get("page") or 0) for b in all_blocks) if all_blocks else 0
-        return {
-            "supplement": supp,
-            "block_count": len(all_blocks),
-            "page_count": page_count,
-            "hints": [
-                f"paper('{hint_id}{supp_prefix}/toc') — browse structure",
-                f"paper('{hint_id}{supp_prefix}/chunk') — read chunks",
-                f"paper('{hint_id}') — back to main paper",
-            ],
-        }
+        body = f"slug:{slug}/supplement/{supp} — {len(all_blocks)} blocks, {page_count} pages"
+        hints = [
+            f"{_T}paper('{hint_id}{supp_prefix}/toc') — browse structure",
+            f"{_T}paper('{hint_id}{supp_prefix}#0-') — read blocks",
+            f"{_T}paper('{hint_id}') — back to main paper",
+        ]
+        return body + _format_hints(hints)
 
+    meta = _clean_meta(paper_dict)
     abstract_blocks = store.get_blocks(ident, block_type="abstract")
-    abstract_text = abstract_blocks[0]["text"] if abstract_blocks else None
+    abstract_text = _clean_jats(abstract_blocks[0]["text"]) if abstract_blocks else None
     all_blocks = store.get_blocks(ident)
     page_count = max((b.get("page") or 0) for b in all_blocks) if all_blocks else 0
     has_summary = any(b["block_type"] == "paper_summary" for b in all_blocks)
@@ -330,39 +559,49 @@ def paper(id: str, filter: str = "", page: int = 1) -> dict[str, Any]:
     supplements = store.get_supplements(ident)
     is_retracted = paper_dict.get("retracted", False)
     retraction_note = paper_dict.get("retraction_note", "")
-    result: dict[str, Any] = {
-        "meta": _clean_meta(paper_dict),
-        "abstract": abstract_text,
-        "block_count": len(all_blocks),
-        "page_count": page_count,
-        "has_summary": has_summary,
-        "hints": [
-            f"paper('{hint_id}/toc') — browse structure",
-            f"paper('{hint_id}/chunk') — read first chunks",
-            f"paper('{hint_id}/page/1') — read page 1",
-            f"search('...') — find related content",
-            f"note('{hint_id}', content='...') — add a note",
-        ],
-    }
+
+    # Build text
+    title = meta.get("title", slug)
+    authors = meta.get("authors", "")
+    year = meta.get("year", "")
+    doi = meta.get("doi", "")
+
+    lines = [f"slug:{slug} — {authors} ({year})" if year else f"slug:{slug}"]
+    lines.append(title)
+    if doi:
+        lines.append(f"doi: {doi}")
+    lines.append(f"{len(all_blocks)} blocks | {page_count} pages" + (" | has summary" if has_summary else ""))
+
     if is_retracted:
         warning = f"⚠ RETRACTED"
         if retraction_note:
             warning += f" — {retraction_note}"
-        result["retracted"] = True
-        result["retraction_note"] = retraction_note
-        result["hints"].insert(0, warning)
-    if supplements:
-        result["supplement_count"] = len(supplements)
-        for s in supplements:
-            result["hints"].append(
-                f"paper('{hint_id}/supplement/{s}') — supplement {s}"
-            )
+        lines.insert(0, warning)
+
     if paper_notes:
-        result["note_count"] = len(paper_notes)
-        result["hints"].insert(
-            0, f"paper('{hint_id}/notes') — {len(paper_notes)} note(s)"
-        )
-    return result
+        lines.append(f"{len(paper_notes)} note(s)")
+
+    if supplements:
+        lines.append(f"supplements: {', '.join(supplements)}")
+
+    if abstract_text:
+        lines.append("")
+        lines.append(f"Abstract: {abstract_text}")
+
+    hints = [
+        f"{_T}paper('{hint_id}/toc') — browse structure",
+        f"{_T}paper('{hint_id}#0-') — read first blocks",
+        f"{_T}paper('{hint_id}/page/1') — read page 1",
+        f"{_T}search('...') — find related content",
+        f"{_T}note('{hint_id}', content='...') — add a note",
+    ]
+    if paper_notes:
+        hints.insert(0, f"{_T}paper('{hint_id}/notes') — {len(paper_notes)} note(s)")
+    if supplements:
+        for s in supplements:
+            hints.append(f"{_T}paper('{hint_id}/supplement/{s}') — supplement {s}")
+
+    return "\n".join(lines) + _format_hints(hints)
 
 
 def _clean_meta(paper_dict: dict) -> dict:
@@ -391,6 +630,46 @@ def _clean_meta(paper_dict: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def _parse_year_filter(year: str) -> tuple[int | None, int | None]:
+    """Parse year filter string into (min_year, max_year) inclusive.
+
+    Formats: "2020" (exact), "-2020" (≤2020), "2020-" (≥2020), "2020-2022" (range).
+    Returns (None, None) if empty or unparseable.
+    """
+    year = year.strip()
+    if not year:
+        return None, None
+    if year.startswith("-"):
+        try:
+            return None, int(year[1:])
+        except ValueError:
+            return None, None
+    if year.endswith("-"):
+        try:
+            return int(year[:-1]), None
+        except ValueError:
+            return None, None
+    if "-" in year:
+        parts = year.split("-", 1)
+        try:
+            return int(parts[0]), int(parts[1])
+        except ValueError:
+            return None, None
+    try:
+        y = int(year)
+        return y, y
+    except ValueError:
+        return None, None
+
+
+def _truncate(text: str, max_chars: int = 120) -> str:
+    """Truncate text to max_chars, adding ellipsis if needed."""
+    text = text.replace("\n", " ").strip()
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars].rstrip() + "…"
+
+
 def _resolve_scope(store: Store, scope: str) -> list[str]:
     """Resolve comma-separated slugs/DOIs to paper_id strings (ref_ids)."""
     paper_ids: list[str] = []
@@ -411,12 +690,47 @@ def _resolve_scope(store: Store, scope: str) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
+_REF_SECTION_KEYWORDS = {
+    "references",
+    "bibliography",
+    "works cited",
+    "literature cited",
+    "citations",
+}
+
+
+def _is_reference_block(hit: dict[str, Any]) -> bool:
+    """True if the hit comes from a references/bibliography section."""
+    sp_raw = hit.get("metadata", {}).get("section_path", "[]")
+    try:
+        sections = json.loads(sp_raw) if isinstance(sp_raw, str) else sp_raw
+    except (json.JSONDecodeError, TypeError):
+        sections = []
+    for sec in sections:
+        if any(kw in str(sec).lower() for kw in _REF_SECTION_KEYWORDS):
+            return True
+    text = hit.get("text", "")
+    if text and text.lstrip()[:1] == "(" and text.lstrip()[1:4].isdigit():
+        return True
+    return False
+
+
+def _get_paper_summary(store: "Store", slug: str) -> str:
+    """Look up the paper_summary block for a slug. Returns empty string if none."""
+    blocks = store.get_blocks(slug, block_type="paper_summary")
+    if blocks:
+        return blocks[0].get("text", "")
+    return ""
+
+
 def search(
     query: str,
     top_k: int = 5,
     kinds: list[str] | None = None,
     scope: str = "",
-) -> dict[str, Any]:
+    year: str = "",
+    style: str = "summary",
+) -> str:
     """Semantic search over stored papers.
 
     Args:
@@ -424,9 +738,13 @@ def search(
         top_k: Number of results to return.
         kinds: Optional block_type filter (e.g. ["text"], ["abstract"]).
         scope: Comma-separated slugs or DOIs to restrict search to.
+        year: Year filter — "2020" (exact), "-2020" (up to), "2020-" (from),
+              "2020-2022" (range). Applied post-search.
+        style: "summary" (default) — one line per paper with generated summary,
+               deduped by slug. "chunk" — raw matched passages, one per hit.
 
     Returns:
-        Dict with items (including provenance) and hints.
+        Compact text with header row and one line per result.
     """
     store = _get_store()
     where: dict[str, Any] = {}
@@ -437,33 +755,147 @@ def search(
     if scope:
         paper_ids = _resolve_scope(store, scope)
         if not paper_ids:
-            return {
-                "items": [],
-                "hints": ["No papers matched the scope filter."],
-            }
+            return "No papers matched the scope filter."
         where["paper_id"] = {"$in": paper_ids} if len(paper_ids) > 1 else paper_ids[0]
 
-    hits = store.search_text(query, top_k=top_k, where=where or None)
+    # Over-fetch to compensate for post-search filters
+    year_min, year_max = _parse_year_filter(year)
+    overfetch = 3 if (year_min or year_max) else 2
+    fetch_k = top_k * overfetch
 
-    # Enrich with provenance
+    hits = store.search_text(query, top_k=fetch_k, where=where or None)
+
+    # Filter reference-section blocks
+    hits = [h for h in hits if not _is_reference_block(h)]
+
+    # Year filter (post-search — year is on ref, not in vector metadata)
+    if year_min or year_max:
+        filtered = []
+        for hit in hits:
+            y = (hit.get("paper") or {}).get("year")
+            if y is None:
+                continue
+            if year_min and y < year_min:
+                continue
+            if year_max and y > year_max:
+                continue
+            filtered.append(hit)
+        hits = filtered
+
+    if not hits:
+        parts = [f'0 results for "{_truncate(query, 60)}"']
+        parts.append(f"{_T}search('{query}', top_k={top_k + 5}) — broaden search")
+        return "\n".join(parts)
+
+    query_display = _truncate(query, 60)
+
+    if style == "chunk":
+        return _format_chunk_results(hits[:top_k], query_display, query, top_k)
+
+    return _format_summary_results(
+        hits, store, query_display, query, top_k
+    )
+
+
+def _format_summary_results(
+    hits: list[dict[str, Any]],
+    store: "Store",
+    query_display: str,
+    query: str,
+    top_k: int,
+) -> str:
+    """Default mode: dedup by slug, show paper_summary snippet."""
+    # Dedup by slug, keep first (best) hit per paper + count
+    seen: dict[str, dict[str, Any]] = {}
+    hit_counts: dict[str, int] = {}
     for hit in hits:
-        bt = hit.get("metadata", {}).get("block_type", "text")
-        hit["block_type"] = bt
-        hit["provenance"] = (
-            "generated" if bt in ("paper_summary", "block_summary") else "original"
-        )
+        slug = (hit.get("paper") or {}).get("slug", "?")
+        hit_counts[slug] = hit_counts.get(slug, 0) + 1
+        if slug not in seen:
+            seen[slug] = hit
 
-    hints = []
-    if hits:
-        # Suggest drilling into top result
-        top = hits[0]
-        slug = (top.get("paper", {}) or {}).get("slug")
-        if slug:
-            hints.append(f"paper('slug:{slug}/toc') — browse top result")
-            hints.append(f"paper('slug:{slug}/abstract') — read abstract")
-    hints.append(f"search('{query}', top_k={top_k + 5}) — broaden search")
+    papers = list(seen.values())[:top_k]
 
-    return {"items": hits, "hints": hints}
+    lines = [
+        f'{len(papers)} paper{"s" if len(papers) != 1 else ""} for "{query_display}"',
+        "slug | title | snippet (✦=generated summary) | hits",
+    ]
+
+    for hit in papers:
+        paper_info = hit.get("paper") or {}
+        slug = paper_info.get("slug", "?")
+        title = _truncate(paper_info.get("title", ""), 50)
+        count = hit_counts.get(slug, 1)
+
+        # Snippet: prefer paper_summary, fall back to hit text
+        summary = _get_paper_summary(_get_store(), slug)
+        if summary:
+            snippet = "✦ " + _truncate(summary, 100)
+        else:
+            snippet = _truncate(hit.get("text", ""), 100)
+
+        count_str = f"{count} hit{'s' if count != 1 else ''}"
+        lines.append(f"{slug} | {title} | {snippet} | {count_str}")
+
+    # Hints
+    lines.append("")
+    lines.append("Next:")
+    top_slug = (papers[0].get("paper") or {}).get("slug") if papers else None
+    if top_slug:
+        lines.append(f"{_T}paper('slug:{top_slug}/abstract') — read abstract")
+        lines.append(f"{_T}paper('slug:{top_slug}/toc') — browse structure")
+    lines.append(
+        f"{_T}search('{_truncate(query, 40)}', style='chunk') — see raw matched passages"
+    )
+    lines.append(f"{_T}search('{_truncate(query, 40)}', top_k={top_k + 5}) — broaden")
+
+    return "\n".join(lines)
+
+
+def _format_chunk_results(
+    hits: list[dict[str, Any]],
+    query_display: str,
+    query: str,
+    top_k: int,
+) -> str:
+    """Chunk mode: raw matched passages, one per hit."""
+    lines = [
+        f'{len(hits)} hit{"s" if len(hits) != 1 else ""} for "{query_display}"',
+        "slug#index (page) | title | snippet (✦=generated)",
+    ]
+
+    for hit in hits:
+        paper_info = hit.get("paper") or {}
+        slug = paper_info.get("slug", "?")
+        title = _truncate(paper_info.get("title", ""), 50)
+        meta = hit.get("metadata", {})
+        bi = meta.get("block_index")
+        page = meta.get("page")
+        text = _truncate(hit.get("text", ""), 100)
+        bt = meta.get("block_type", meta.get("type", "text"))
+        prov = "✦ " if bt in ("paper_summary", "block_summary") else ""
+
+        chunk_ref = f"{slug}#{bi}" if bi is not None else slug
+        page_str = f" (p{page})" if page else ""
+        lines.append(f"{chunk_ref}{page_str} | {title} | {prov}{text}")
+
+    # Hints
+    lines.append("")
+    lines.append("Next:")
+    top_hit = hits[0] if hits else None
+    if top_hit:
+        top_slug = (top_hit.get("paper") or {}).get("slug")
+        top_bi = (top_hit.get("metadata") or {}).get("block_index")
+        if top_slug:
+            if top_bi is not None:
+                lines.append(f"{_T}paper('slug:{top_slug}#{top_bi}') — read this block")
+            lines.append(f"{_T}paper('slug:{top_slug}/toc') — browse structure")
+    lines.append(
+        f"{_T}search('{_truncate(query, 40)}', style='summary') — see paper summaries"
+    )
+    lines.append(f"{_T}search('{_truncate(query, 40)}', top_k={top_k + 5}) — broaden")
+
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -477,12 +909,12 @@ def note(
     title: str = "",
     tags: list[str] | None = None,
     delete: bool = False,
-) -> dict[str, Any]:
+) -> str:
     """Read, write, or delete notes on papers or blocks.
 
     Args:
         id: URI target — scheme:ident for paper-level,
-            scheme:ident/chunk/N for block-level,
+            scheme:ident#N for block-level,
             note:N for a specific note by id.
         content: Note content. If provided → write.
                  If empty → read.
@@ -491,7 +923,7 @@ def note(
         delete: If True → delete the note(s).
 
     Returns:
-        Dict with notes or confirmation + hints.
+        Compact text with result + Next: hints.
     """
     store = _get_store()
     uri = parse(id)
@@ -501,34 +933,36 @@ def note(
         note_id = int(uri.ident)
         if delete:
             ok = store.delete_note(note_id)
-            return {"deleted": ok, "hints": []}
+            return f"Deleted note {note_id}: {'ok' if ok else 'not found'}"
         if content:
             ok = store.update_note(
                 note_id, content=content, title=title or None, tags=tags
             )
-            return {
-                "updated": ok,
-                "hints": [
-                    f"note('note:{note_id}') — read this note",
-                    f"note('note:{note_id}', delete=True) — delete",
-                ],
-            }
+            hints = [
+                f"{_T}note('note:{note_id}') — read this note",
+                f"{_T}note('note:{note_id}', delete=True) — delete",
+            ]
+            return f"Updated note {note_id}: {'ok' if ok else 'not found'}" + _format_hints(hints)
         # Read single note by id
         all_notes = store.get_notes()
         found = [n for n in all_notes if n.get("id") == note_id]
-        return {
-            "notes": found,
-            "hints": [
-                f"note('note:{note_id}', content='...') — update",
-                f"note('note:{note_id}', delete=True) — delete",
-            ],
-        }
+        if found:
+            n = found[0]
+            body = f"[{n.get('id')}] {n.get('content', '')}"
+        else:
+            body = f"Note {note_id} not found"
+        hints = [
+            f"{_T}note('note:{note_id}', content='...') — update",
+            f"{_T}note('note:{note_id}', delete=True) — delete",
+        ]
+        return body + _format_hints(hints)
 
     # Resolve paper
     ident = _resolve_identifier(store, uri)
     paper_dict = store.get(ident)
     if paper_dict is None:
-        return {"error": f"Not found: {id}", "hints": ["search('...') — try searching"]}
+        hints = [f"{_T}search('...') — try searching"]
+        return f"Not found: {id}" + _format_hints(hints)
 
     ref_id = paper_dict.get("ref_id") or paper_dict.get("id")
     bid = _base_id(uri)
@@ -543,7 +977,7 @@ def note(
         if target:
             block_node_id = target[0]["node_id"]
         else:
-            return {"error": f"Chunk {uri.range_start} not found"}
+            return f"Chunk {uri.range_start} not found"
 
     # --- delete ---
     if delete:
@@ -551,12 +985,12 @@ def note(
             notes = store.get_notes(block_node_id=block_node_id)
             for n in notes:
                 store.delete_note(n["id"])
-            return {"deleted": len(notes), "hints": []}
+            return f"Deleted {len(notes)} note(s)"
         else:
             notes = store.get_notes(ref_id=ref_id)
             for n in notes:
                 store.delete_note(n["id"])
-            return {"deleted": len(notes), "hints": []}
+            return f"Deleted {len(notes)} note(s)"
 
     # --- write ---
     if content:
@@ -566,13 +1000,11 @@ def note(
             )
         else:
             nid = store.add_note(content, ref_id=ref_id, title=title or None, tags=tags)
-        return {
-            "note_id": nid,
-            "hints": [
-                f"paper('{hint_id}/notes') — read all notes",
-                f"note('note:{nid}', delete=True) — delete this note",
-            ],
-        }
+        hints = [
+            f"{_T}paper('{hint_id}/notes') — read all notes",
+            f"{_T}note('note:{nid}', delete=True) — delete this note",
+        ]
+        return f"Note {nid} created" + _format_hints(hints)
 
     # --- read ---
     if block_node_id:
@@ -580,12 +1012,18 @@ def note(
     else:
         notes = store.get_notes(ref_id=ref_id)
 
+    if notes:
+        note_lines = [f"[{n.get('id')}] {n.get('content', '')}" for n in notes]
+        body = f"{len(notes)} note(s) for {hint_id}\n" + "\n".join(note_lines)
+    else:
+        body = f"No notes for {hint_id}"
+
     hints = [
-        f"note('{hint_id}', content='...') — add a note",
-        f"paper('{hint_id}') — view paper",
+        f"{_T}note('{hint_id}', content='...') — add a note",
+        f"{_T}paper('{hint_id}') — view paper",
     ]
     for n in notes:
         nid = n.get("id")
-        hints.append(f"note('note:{nid}', content='...') — edit note {nid}")
-        hints.append(f"note('note:{nid}', delete=True) — delete note {nid}")
-    return {"notes": notes, "hints": hints}
+        hints.append(f"{_T}note('note:{nid}', content='...') — edit note {nid}")
+        hints.append(f"{_T}note('note:{nid}', delete=True) — delete note {nid}")
+    return body + _format_hints(hints)
