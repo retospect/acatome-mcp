@@ -245,18 +245,16 @@ def _annotate_note_counts(items: list[dict], store: Store, ref_id: int) -> list[
 
 
 def paper(id: str, filter: str = "", page: int = 1) -> str:
-    """Read paper content via URI addressing.
+    """Look up a paper — read its abstract, browse structure, or dive into specific passages.
 
     Args:
         id: URI — scheme:identifier[#chunk][/view][/summary][/notes]
             Schemes: slug, doi, arxiv, s2, ref
             Views: meta, abstract, summary, toc, page, fig
-            #N for chunk, #N-M for range, #N- for open range
-        filter: Case-insensitive substring match on block text.
-        page: Result page (1-indexed) for filtered results.
-
-    Returns:
-        Compact text with content + Next: hints.
+            Chunks: #N (single), #N-M (range), #N- (open, next 10)
+            Modifiers: /summary (enrichment summary), /notes (annotations)
+        filter: Substring filter on block text (case-insensitive).
+        page: Result page (1-indexed) for paginated views.
     """
     uri = parse(id)
     store = _get_store()
@@ -731,20 +729,18 @@ def search(
     year: str = "",
     style: str = "summary",
 ) -> str:
-    """Semantic search over stored papers.
+    """Find papers and passages in your library by meaning, not just keywords.
+
+    Use for: finding relevant papers, discovering connections, answering
+    questions from the stored literature.
 
     Args:
         query: Natural language search query.
-        top_k: Number of results to return.
-        kinds: Optional block_type filter (e.g. ["text"], ["abstract"]).
-        scope: Comma-separated slugs or DOIs to restrict search to.
-        year: Year filter — "2020" (exact), "-2020" (up to), "2020-" (from),
-              "2020-2022" (range). Applied post-search.
-        style: "summary" (default) — one line per paper with generated summary,
-               deduped by slug. "chunk" — raw matched passages, one per hit.
-
-    Returns:
-        Compact text with header row and one line per result.
+        top_k: Number of results (default 5).
+        kinds: Block type filter (e.g. ["text"], ["abstract"]).
+        scope: Restrict to specific slugs or DOIs (comma-separated).
+        year: Year filter — "2020", "-2020", "2020-", "2020-2022".
+        style: "summary" (default, one line per paper) or "chunk" (raw passages).
     """
     store = _get_store()
     where: dict[str, Any] = {}
@@ -910,20 +906,15 @@ def note(
     tags: list[str] | None = None,
     delete: bool = False,
 ) -> str:
-    """Read, write, or delete notes on papers or blocks.
+    """Annotate papers with your own notes — attach to whole papers or specific passages.
 
     Args:
-        id: URI target — scheme:ident for paper-level,
-            scheme:ident#N for block-level,
-            note:N for a specific note by id.
-        content: Note content. If provided → write.
-                 If empty → read.
-        title: Optional note title (write only).
-        tags: Optional tags (write only).
-        delete: If True → delete the note(s).
-
-    Returns:
-        Compact text with result + Next: hints.
+        id: URI target — scheme:ident (paper-level), scheme:ident#N (block-level),
+            or note:N (existing note by id).
+        content: Note text. If provided → write/update. If empty → read.
+        title: Optional note title.
+        tags: Optional tags list.
+        delete: If True → delete the note.
     """
     store = _get_store()
     uri = parse(id)
