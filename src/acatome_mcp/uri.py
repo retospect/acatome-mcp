@@ -6,8 +6,8 @@ Grammar::
               [ "/" view ] [ "/summary" ] [ "/notes" ]
     view   := "meta" | "abstract" | "toc" | "page" [ "/" range ]
             | "fig" [ "/" range ] | "summary"
-    chunk_range := INT | INT "-" INT | INT "-"
-    range  := INT | INT "-" INT | INT "-"
+    chunk_range := INT | INT ".." INT | INT ".."
+    range  := INT | INT ".." INT | INT ".."
     scheme := "slug" | "doi" | "arxiv" | "s2" | "ref" | "note"
 
 Trailing modifiers ``/summary`` and ``/notes`` are stripped early and set
@@ -21,8 +21,8 @@ Examples::
     slug:smith2024quantum              -- default overview
     slug:smith2024quantum/abstract     -- abstract
     slug:smith2024quantum#38           -- chunk 38 full text
-    slug:smith2024quantum#38-42        -- chunks 38–42
-    slug:smith2024quantum#38-          -- chunks 38+, paginated
+    slug:smith2024quantum#38..42       -- chunks 38–42
+    slug:smith2024quantum#38..          -- chunks 38+, paginated
     slug:smith2024quantum#38/summary   -- chunk 38 enrichment summary
     slug:smith2024quantum/summary      -- paper-level summary
     slug:smith2024quantum/toc          -- table of contents
@@ -79,15 +79,15 @@ class ParsedURI:
 _DOI_PREFIX = re.compile(r"^10\.\d{4,}/")
 
 # Matches #N, #N-M, #N- at any position
-_CHUNK_HASH = re.compile(r"#(\d+(?:-\d*)?)")
+_CHUNK_HASH = re.compile(r"#(\d+(?:\.\.\d*)?)")
 
 
 def _parse_range(raw: str) -> tuple[Optional[int], Optional[int]]:
-    """Parse range string: '4', '4-6', '11-'."""
+    """Parse range string: '4', '4..6', '11..'."""
     if not raw:
         return None, None
-    if "-" in raw:
-        left, _, right = raw.partition("-")
+    if ".." in raw:
+        left, _, right = raw.partition("..")
         start = int(left)
         end = int(right) if right else None
         return start, end

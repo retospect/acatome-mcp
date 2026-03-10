@@ -251,7 +251,7 @@ def paper(id: str, filter: str = "", page: int = 1) -> str:
         id: URI — scheme:identifier[#chunk][/view][/summary][/notes]
             Schemes: slug, doi, arxiv, s2, ref
             Views: meta, abstract, summary, toc, page, fig
-            Chunks: #N (single), #N-M (range), #N- (open, next 10)
+            Chunks: #N (single), #N..M (range), #N.. (open, next 10)
             Modifiers: /summary (enrichment summary), /notes (annotations)
         filter: Substring filter on block text (case-insensitive).
         page: Result page (1-indexed) for paginated views.
@@ -542,7 +542,7 @@ def paper(id: str, filter: str = "", page: int = 1) -> str:
         body = f"slug:{slug}/supplement/{supp} — {len(all_blocks)} blocks, {page_count} pages"
         hints = [
             f"{_T}paper('{hint_id}{supp_prefix}/toc') — browse structure",
-            f"{_T}paper('{hint_id}{supp_prefix}#0-') — read blocks",
+            f"{_T}paper('{hint_id}{supp_prefix}#0..') — read blocks",
             f"{_T}paper('{hint_id}') — back to main paper",
         ]
         return body + _format_hints(hints)
@@ -588,7 +588,7 @@ def paper(id: str, filter: str = "", page: int = 1) -> str:
 
     hints = [
         f"{_T}paper('{hint_id}/toc') — browse structure",
-        f"{_T}paper('{hint_id}#0-') — read first blocks",
+        f"{_T}paper('{hint_id}#0..') — read first blocks",
         f"{_T}paper('{hint_id}/page/1') — read page 1",
         f"{_T}search('...') — find related content",
         f"{_T}note('{hint_id}', content='...') — add a note",
@@ -631,24 +631,24 @@ def _clean_meta(paper_dict: dict) -> dict:
 def _parse_year_filter(year: str) -> tuple[int | None, int | None]:
     """Parse year filter string into (min_year, max_year) inclusive.
 
-    Formats: "2020" (exact), "-2020" (≤2020), "2020-" (≥2020), "2020-2022" (range).
+    Formats: "2020" (exact), "..2020" (≤2020), "2020.." (≥2020), "2020..2022" (range).
     Returns (None, None) if empty or unparseable.
     """
     year = year.strip()
     if not year:
         return None, None
-    if year.startswith("-"):
+    if year.startswith(".."):
         try:
-            return None, int(year[1:])
+            return None, int(year[2:])
         except ValueError:
             return None, None
-    if year.endswith("-"):
+    if year.endswith(".."):
         try:
-            return int(year[:-1]), None
+            return int(year[:-2]), None
         except ValueError:
             return None, None
-    if "-" in year:
-        parts = year.split("-", 1)
+    if ".." in year:
+        parts = year.split("..", 1)
         try:
             return int(parts[0]), int(parts[1])
         except ValueError:
@@ -739,7 +739,7 @@ def search(
         top_k: Number of results (default 5).
         kinds: Block type filter (e.g. ["text"], ["abstract"]).
         scope: Restrict to specific slugs or DOIs (comma-separated).
-        year: Year filter — "2020", "-2020", "2020-", "2020-2022".
+        year: Year filter — "2020", "..2020", "2020..", "2020..2022".
         style: "summary" (default, one line per paper) or "chunk" (raw passages).
     """
     store = _get_store()

@@ -34,20 +34,20 @@ class TestParseBasic:
         assert u.is_single
 
     def test_closed_range(self):
-        u = parse("slug:smith2024/chunk/4-6")
+        u = parse("slug:smith2024/chunk/4..6")
         assert u.range_start == 4
         assert u.range_end == 6
         assert not u.is_single
         assert not u.is_open_range
 
     def test_open_range(self):
-        u = parse("slug:smith2024/chunk/11-")
+        u = parse("slug:smith2024/chunk/11..")
         assert u.range_start == 11
         assert u.range_end is None
         assert u.is_open_range
 
     def test_page_range(self):
-        u = parse("slug:smith2024/page/2-4")
+        u = parse("slug:smith2024/page/2..4")
         assert u.view == "page"
         assert u.range_start == 2
         assert u.range_end == 4
@@ -172,13 +172,13 @@ class TestParseChunkHash:
         assert u.is_single
 
     def test_hash_closed_range(self):
-        u = parse("slug:smith2024#38-42")
+        u = parse("slug:smith2024#38..42")
         assert u.view == "chunk"
         assert u.range_start == 38
         assert u.range_end == 42
 
     def test_hash_open_range(self):
-        u = parse("slug:smith2024#38-")
+        u = parse("slug:smith2024#38..")
         assert u.view == "chunk"
         assert u.range_start == 38
         assert u.range_end is None
@@ -197,7 +197,7 @@ class TestParseChunkHash:
         assert u.summary is True
 
     def test_hash_range_with_summary(self):
-        u = parse("slug:smith2024#38-42/summary")
+        u = parse("slug:smith2024#38..42/summary")
         assert u.view == "chunk"
         assert u.range_start == 38
         assert u.range_end == 42

@@ -164,7 +164,7 @@ class TestPaperViews:
                 for i in range(20)
             ]
             mock.get_blocks.return_value = blocks
-            result = paper(id="slug:smith2024quantum#11-")
+            result = paper(id="slug:smith2024quantum#11..")
             assert "block 11" in result
             assert "block 19" in result
 
@@ -330,7 +330,7 @@ class TestSearch:
                     "paper": {"slug": "p2025", "year": 2025, "title": "C"},
                 },
             ]
-            result = search(query="test", year="2019-2024")
+            result = search(query="test", year="2019..2024")
             assert "p2020" in result
             assert "p2018" not in result
             assert "p2025" not in result
@@ -349,7 +349,7 @@ class TestSearch:
                     "paper": {"slug": "p2022", "year": 2022, "title": "B"},
                 },
             ]
-            result = search(query="test", year="2020-")
+            result = search(query="test", year="2020..")
             assert "p2022" in result
             assert "p2015" not in result
 

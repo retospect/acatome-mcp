@@ -22,15 +22,15 @@ def paper(id: str, filter: str = "", page: int = 1) -> str:
     id format: scheme:identifier[#chunk][/view][/summary][/notes]
       Schemes: slug, doi, arxiv, s2, ref
       Views: meta, abstract, summary, toc, page, fig
-      #N selects chunk N, #N-M for range, #N- for open range (next 10)
+      #N selects chunk N, #N..M for range, #N.. for open range (next 10)
 
     Examples:
       slug:smith2024quantum          — overview + hints
       slug:smith2024quantum/abstract — abstract text
       slug:smith2024quantum/toc      — table of contents with summaries
       slug:smith2024quantum#38       — chunk 38 full text
-      slug:smith2024quantum#38-42    — chunks 38–42
-      slug:smith2024quantum#38-      — chunks 38+, paginated
+      slug:smith2024quantum#38..42   — chunks 38–42
+      slug:smith2024quantum#38..      — chunks 38+, paginated
       slug:smith2024quantum#38/summary — chunk 38 enrichment summary
       slug:smith2024quantum/summary  — paper-level summary
       doi:10.1038/s41567-024-1234-5/toc — via DOI
