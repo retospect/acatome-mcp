@@ -244,7 +244,34 @@ def _annotate_note_counts(items: list[dict], store: Store, ref_id: int) -> list[
 # ---------------------------------------------------------------------------
 
 
-def paper(id: str, filter: str = "", page: int = 1) -> str:
+def _format_paper_list(papers: list[dict]) -> str:
+    """Format list_papers output as compact text."""
+    if not papers:
+        return "📚 No papers in library.\nUse acatome-extract to ingest PDFs."
+    lines = [f"📚 {len(papers)} paper(s) in library"]
+    lines.append("slug | year | title | blocks | keywords")
+    for p in papers:
+        slug = p.get("slug") or "?"
+        year = p.get("year") or "?"
+        title = _truncate(p.get("title") or "(untitled)", 60)
+        bc = p.get("block_count", 0)
+        kw = p.get("keywords")
+        if isinstance(kw, list):
+            kw = "; ".join(kw[:5])
+        elif not kw:
+            kw = ""
+        lines.append(f"{slug} | {year} | {title} | {bc} blocks | {kw}")
+    lines.append("")
+    lines.append("Next:")
+    # Pick first slug for examples
+    first = papers[0].get("slug", "example")
+    lines.append(f"{_T}paper('slug:{first}') — overview of a paper")
+    lines.append(f"{_T}paper('slug:{first}/toc') — table of contents")
+    lines.append(f"{_T}search('your query') — semantic search across all papers")
+    return "\n".join(lines)
+
+
+def paper(id: str = "", filter: str = "", page: int = 1) -> str:
     """Look up a paper — read its abstract, browse structure, or dive into specific passages.
 
     Args:
@@ -253,9 +280,16 @@ def paper(id: str, filter: str = "", page: int = 1) -> str:
             Views: meta, abstract, summary, toc, page, fig
             Chunks: #N (single), #N..M (range), #N.. (open, next 10)
             Modifiers: /summary (enrichment summary), /notes (annotations)
+            Empty string: list all papers in the library.
         filter: Substring filter on block text (case-insensitive).
         page: Result page (1-indexed) for paginated views.
     """
+    # Empty id → list all papers
+    if not id or not id.strip():
+        store = _get_store()
+        papers = store.list_papers()
+        return _format_paper_list(papers)
+
     uri = parse(id)
     store = _get_store()
     ident = _resolve_identifier(store, uri)
