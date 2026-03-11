@@ -660,8 +660,10 @@ def _parse_year_filter(year: str) -> tuple[int | None, int | None]:
         return None, None
 
 
-def _truncate(text: str, max_chars: int = 120) -> str:
+def _truncate(text: str | None, max_chars: int = 120) -> str:
     """Truncate text to max_chars, adding ellipsis if needed."""
+    if not text:
+        return ""
     text = text.replace("\n", " ").strip()
     if len(text) <= max_chars:
         return text
