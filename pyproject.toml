@@ -1,6 +1,6 @@
 [project]
 name = "acatome-mcp"
-version = "0.2.1"
+version = "0.2.2"
 description = "MCP server exposing acatome-store tools"
 requires-python = ">=3.11"
 license = "GPL-3.0-or-later"
@@ -19,12 +19,6 @@ classifiers = [
 
 dependencies = [
     "acatome-store>=0.1.0",
-    "acatome-extract>=0.1.0",
-    "acatome-chat>=0.1.0",
-    "precis-mcp>=0.1.0",
-    "perplexity-sonar-mcp>=0.1.0",
-    "catapult-mcp>=0.1.0",
-    "grandmofty-mcp>=0.1.0",
     "mcp>=1.0",
 ]
 
@@ -34,8 +28,6 @@ Repository = "https://github.com/acatome/acatome-mcp"
 Issues = "https://github.com/acatome/acatome-mcp/issues"
 
 [project.optional-dependencies]
-postgres = ["acatome-store[postgres]"]
-embeddings = ["acatome-store[embeddings]"]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
@@ -64,7 +56,7 @@ line-length = 88
 line-length = 88
 
 [tool.bumpversion]
-current_version = "0.2.1"
+current_version = "0.2.2"
 commit = true
 tag = true
 tag_name = "v{new_version}"
