@@ -12,6 +12,8 @@ import json
 import re
 from typing import Any
 
+from precis_summary.rake import telegram_precis
+
 from acatome_store.store import Store
 
 from acatome_mcp.uri import PAGE_SIZE, ParsedURI, parse
@@ -691,6 +693,29 @@ def _parse_year_filter(year: str) -> tuple[int | None, int | None]:
         return None, None
 
 
+def _compact_title(title: str, max_chars: int = 50) -> str:
+    """Shorten a paper title: RAKE keyphrases if too long, else as-is."""
+    if not title:
+        return ""
+    title = title.replace("\n", " ").strip()
+    if len(title) <= max_chars:
+        return title
+    return _truncate(telegram_precis(title), max_chars)
+
+
+def _hit_snippet(hit: dict[str, Any], max_chars: int = 100) -> str:
+    """Best snippet for a search hit: block summary > RAKE > truncated text."""
+    # Enrichment summary from store (set by store.search_text)
+    summary = hit.get("summary")
+    if summary:
+        return "✦ " + _truncate(summary, max_chars)
+    # RAKE extraction as fallback
+    text = hit.get("text", "")
+    if text and len(text.strip()) >= 50:
+        return _truncate(telegram_precis(text), max_chars)
+    return _truncate(text, max_chars)
+
+
 def _truncate(text: str | None, max_chars: int = 120) -> str:
     """Truncate text to max_chars, adding ellipsis if needed."""
     if not text:
@@ -834,44 +859,50 @@ def _format_summary_results(
     top_k: int,
 ) -> str:
     """Default mode: dedup by slug, show paper_summary snippet."""
-    # Dedup by slug, keep first (best) hit per paper + count
+    # Dedup by slug, keep first (best) hit per paper + block indices in rank order
     seen: dict[str, dict[str, Any]] = {}
-    hit_counts: dict[str, int] = {}
+    slug_blocks: dict[str, list[int]] = {}
     for hit in hits:
         slug = (hit.get("paper") or {}).get("slug", "?")
-        hit_counts[slug] = hit_counts.get(slug, 0) + 1
+        bi = (hit.get("metadata") or {}).get("block_index")
         if slug not in seen:
             seen[slug] = hit
+        slug_blocks.setdefault(slug, [])
+        if bi is not None and bi not in slug_blocks[slug]:
+            slug_blocks[slug].append(bi)
 
     papers = list(seen.values())[:top_k]
 
     lines = [
         f'{len(papers)} paper{"s" if len(papers) != 1 else ""} for "{query_display}"',
-        "slug | title | snippet (✦=generated summary) | hits",
+        "slug | title | snippet (✦=generated) | matching blocks",
     ]
 
     for hit in papers:
         paper_info = hit.get("paper") or {}
         slug = paper_info.get("slug", "?")
-        title = _truncate(paper_info.get("title", ""), 50)
-        count = hit_counts.get(slug, 1)
+        title = _compact_title(paper_info.get("title", ""), 50)
+        blocks = slug_blocks.get(slug, [])
 
-        # Snippet: prefer paper_summary, fall back to hit text
+        # Snippet: prefer paper_summary, fall back to block summary/RAKE
         summary = _get_paper_summary(_get_store(), slug)
         if summary:
             snippet = "✦ " + _truncate(summary, 100)
         else:
-            snippet = _truncate(hit.get("text", ""), 100)
+            snippet = _hit_snippet(hit, 100)
 
-        count_str = f"{count} hit{'s' if count != 1 else ''}"
-        lines.append(f"{slug} | {title} | {snippet} | {count_str}")
+        block_str = ",".join(f"#{b}" for b in blocks) if blocks else "?"
+        lines.append(f"{slug} | {title} | {snippet} | {block_str}")
 
     # Hints
     lines.append("")
     lines.append("Next:")
     top_slug = (papers[0].get("paper") or {}).get("slug") if papers else None
     if top_slug:
-        lines.append(f"{_T}paper('slug:{top_slug}/abstract') — read abstract")
+        top_blocks = slug_blocks.get(top_slug, [])
+        if top_blocks:
+            top_bi = top_blocks[0]
+            lines.append(f"{_T}paper('slug:{top_slug}#{top_bi}') — read top matching block")
         lines.append(f"{_T}paper('slug:{top_slug}/toc') — browse structure")
     lines.append(
         f"{_T}search('{_truncate(query, 40)}', style='chunk') — see raw matched passages"
@@ -896,17 +927,15 @@ def _format_chunk_results(
     for hit in hits:
         paper_info = hit.get("paper") or {}
         slug = paper_info.get("slug", "?")
-        title = _truncate(paper_info.get("title", ""), 50)
+        title = _compact_title(paper_info.get("title", ""), 50)
         meta = hit.get("metadata", {})
         bi = meta.get("block_index")
         page = meta.get("page")
-        text = _truncate(hit.get("text", ""), 100)
-        bt = meta.get("block_type", meta.get("type", "text"))
-        prov = "✦ " if bt in ("paper_summary", "block_summary") else ""
+        snippet = _hit_snippet(hit, 100)
 
         chunk_ref = f"{slug}#{bi}" if bi is not None else slug
         page_str = f" (p{page})" if page else ""
-        lines.append(f"{chunk_ref}{page_str} | {title} | {prov}{text}")
+        lines.append(f"{chunk_ref}{page_str} | {title} | {snippet}")
 
     # Hints
     lines.append("")

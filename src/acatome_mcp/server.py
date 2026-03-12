@@ -59,11 +59,12 @@ def search(
     scope: comma-separated slugs or DOIs to restrict search to
     year: year filter — "2020" (exact), "-2020" (up to), "2020-" (from),
           "2020-2022" (range)
-    style: "summary" (default) — one line per paper, deduped, with generated
-           summary. "chunk" — raw matched passages, one per hit.
+    style: "summary" (default) — one line per paper with generated summary
+           and matching block indices (#34,#12). "chunk" — one per hit with
+           block summary or RAKE keyphrases.
 
     Returns compact one-line-per-result format.
-    Use paper(slug/abstract) or paper(slug/toc) to drill deeper.
+    Use paper(id='slug:name/abstract') or paper(id='slug:name/toc') to drill deeper.
     """
     return tools.search(
         query=query, top_k=top_k, kinds=kinds, scope=scope, year=year, style=style

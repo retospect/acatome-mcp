@@ -20,6 +20,7 @@ classifiers = [
 dependencies = [
     "acatome-store>=0.1.0",
     "mcp>=1.0",
+    "precis-summary>=0.1.0",
 ]
 
 [project.urls]
