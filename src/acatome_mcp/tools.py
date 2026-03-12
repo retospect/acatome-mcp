@@ -405,14 +405,13 @@ def paper(id: str = "", filter: str = "", page: int = 1) -> str:
             pg = item.get("page", 0)
             bt = item.get("block_type", "text")
             preview = (item.get("preview") or "").strip()
-            section = _clean_section_path(item.get("section_path"))
             note_count = item.get("note_count", 0)
 
             # Skip empty previews (e.g. blank figures)
             if not preview and bt in ("figure", "table"):
                 continue
 
-            # Format: #N (pP) | type | §section | preview
+            # Format: #N (pP) | type | preview
             idx = f"#{bi}" if bi is not None else "  "
             pg_str = f"(p{pg})" if pg else ""
             type_tag = {
@@ -422,8 +421,6 @@ def paper(id: str = "", filter: str = "", page: int = 1) -> str:
                 "junk": "junk",
             }.get(bt, bt)
             parts = [f"{idx} {pg_str}", type_tag]
-            if section:
-                parts.append(section)
             parts.append(preview)
             line = " | ".join(parts)
 
@@ -436,7 +433,7 @@ def paper(id: str = "", filter: str = "", page: int = 1) -> str:
             header += f" ({junk_count} junk hidden)"
         if page > 1 or has_more:
             header += f" (page {page})"
-        header += "\n#index (page) | type | §section | summary"
+        header += "\n#index (page) | type | summary"
         body = header + "\n" + "\n".join(lines)
 
         hints = []
