@@ -1,3 +1,11 @@
-"""acatome-mcp: MCP server exposing acatome-store tools."""
+"""acatome-mcp — DEPRECATED. Use precis-mcp instead."""
 
-__version__ = "0.3.0"
+import warnings
+
+__version__ = "0.4.0"
+
+warnings.warn(
+    "acatome-mcp is deprecated. Use precis-mcp instead: pip install precis-mcp",
+    DeprecationWarning,
+    stacklevel=2,
+)

@@ -1,4 +1,16 @@
-# acatome-mcp
+# ⚠️ acatome-mcp — DEPRECATED
+
+**This package is deprecated. Use [`precis-mcp`](https://pypi.org/project/precis-mcp/) instead.**
+
+`precis-mcp` unifies paper reading (formerly acatome-mcp) and manuscript editing into a single MCP server with 4 tools: `search()`, `get()`, `put()`, `move()`.
+
+```bash
+pip install precis-mcp
+```
+
+---
+
+# acatome-mcp (archived)
 
 A [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server that exposes the acatome paper library to LLMs. Provides tools for reading papers, searching the library, and managing notes.
 
